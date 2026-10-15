@@ -422,6 +422,8 @@ function computeStock(){
 function onHand(gtin, lot, expiry){ return computeStock().find(l => l.gtin===gtin && l.lot===(lot||'') && l.expiry===(expiry||''))?.qty ?? 0; }
 const pname = g => state.products[g]?.name || 'Unlisted GTIN';
 const psku = g => state.products[g]?.sku || '';
+const ppack = g => Math.max(1, parseInt(state.products[g]?.perPack) || 1);
+const packLabel = g => ppack(g) === 1 ? 'single' : 'pack of ' + ppack(g);
 
 /* ---------- tabs & mode ---------- */
 document.querySelectorAll('nav.tabs button').forEach(b => b.addEventListener('click', () => setTab(b.dataset.tab)));
@@ -464,7 +466,8 @@ function openMoveSheet(p){
     </div>
     ${known ? '' : `<div class="msg info">This GTIN isn't in your product list yet. Name it once and it will be recognised from now on.</div>
       <div class="grid2"><label class="field"><span class="label">SKU / REF</span><input id="np-sku" type="text" autocomplete="off"></label>
-      <label class="field"><span class="label">Description</span><input id="np-name" type="text" autocomplete="off" required></label></div>`}
+      <label class="field"><span class="label">Description</span><input id="np-name" type="text" autocomplete="off" required></label></div>
+      <label class="field"><span class="label">Units per pack (1 = single)</span><input id="np-pack" type="number" inputmode="numeric" min="1" step="1" value="1"></label>`}
     <div class="grid2">
       <label class="field"><span class="label">Lot</span><input id="mv-lot" type="text" value="${esc(p.lot)}" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
       <label class="field"><span class="label">Expiry</span><input id="mv-exp" type="date" value="${esc(p.expiry)}"></label>
@@ -510,7 +513,7 @@ function openMoveSheet(p){
     try {
       if (!known) {
         const name = $('np-name').value.trim(); if (!name) { $('np-name').focus(); btn.disabled=false; btn.textContent = dir==='in'?'Record stock in':'Record stock out'; return; }
-        await store.putProduct({ gtin: p.gtin, sku: $('np-sku').value.trim(), name, createdAt: new Date().toISOString() });
+        await store.putProduct({ gtin: p.gtin, sku: $('np-sku').value.trim(), name, perPack: Math.max(1, parseInt($('np-pack').value) || 1), createdAt: new Date().toISOString() });
       }
       await store.addMove({ dir, gtin: p.gtin, lot: $('mv-lot').value.trim().toUpperCase(), expiry: $('mv-exp').value || '', qty, note: $('mv-note').value.trim(), at: new Date().toISOString(), raw: String(p.raw).replace(/\x1D/g,'<GS>') });
       close(); toast(`${dir==='in'?'Received':'Dispatched'} ${qty} × ${pname(p.gtin)}`); beep(); if ($('keep').checked) setTimeout(openScanner, 350);
@@ -531,6 +534,8 @@ function openProductSheet(gtin){
     <label class="field"><span class="label">GTIN (14 digits, or scan the label in the Scan tab)</span><input id="ps-gtin" type="text" inputmode="numeric" value="${esc(p?.gtin||'')}" ${p?'readonly':''} required autocomplete="off"></label>
     <label class="field"><span class="label">SKU / REF</span><input id="ps-sku" type="text" value="${esc(p?.sku||'')}" autocomplete="off"></label>
     <label class="field"><span class="label">Description</span><input id="ps-name" type="text" value="${esc(p?.name||'')}" required autocomplete="off"></label>
+    <label class="field"><span class="label">Units per pack (1 = single, 10 = box of 10, 80 = carton of 80)</span><input id="ps-pack" type="number" inputmode="numeric" min="1" step="1" value="${esc(p?.perPack||1)}"></label>
+    <p class="muted" style="margin:0;font-size:.82rem">Give every pack level of the same product the same SKU / REF so the ledger can total them in singles.</p>
     <div id="ps-msg"></div>
     <div class="actions">
       ${p ? `<button type="button" class="btn danger" id="ps-del" ${used?'disabled title="This GTIN has movements in the log"':''}>Delete</button>` : ''}
@@ -549,7 +554,7 @@ function openProductSheet(gtin){
     if (/^\d{8,13}$/.test(g)) g = g.padStart(14,'0');
     if (!gtinCheckOk(g)) { $('ps-msg').innerHTML='<div class="msg bad">That isn\'t a valid GTIN. Check the digits; the last one is a check digit.</div>'; return; }
     if (!p && state.products[g]) { $('ps-msg').innerHTML='<div class="msg bad">That GTIN is already listed.</div>'; return; }
-    try { await store.putProduct({ gtin: g, sku: $('ps-sku').value.trim(), name: $('ps-name').value.trim(), createdAt: p?.createdAt || new Date().toISOString() });
+    try { await store.putProduct({ gtin: g, sku: $('ps-sku').value.trim(), name: $('ps-name').value.trim(), perPack: Math.max(1, parseInt($('ps-pack').value) || 1), createdAt: p?.createdAt || new Date().toISOString() });
       close(); toast(p?'Product saved':'GTIN added'); } catch(e){ $('ps-msg').innerHTML='<div class="msg bad">Not saved. Try again.</div>'; }
   });
 }
@@ -569,33 +574,79 @@ function renderRecent(){
   const el = $('recent');
   if (!state.dbReady) { el.innerHTML = `<div class="empty">${state.noDb ? '<h3>Storage unavailable</h3>This browser is blocking storage, so scans can\'t be saved. Open the app from its icon, not a private tab.' : 'Loading…'}</div>`; return; }
   const r = state.moves.slice(0, 5);
-  el.innerHTML = r.length ? r.map(m => moveRow(m,false)).join('') : `<div class="empty"><h3>No movements yet</h3>Choose Stock in, tap the scan area and photograph the GS1 label on a carton or pouch. Unknown GTINs are added as you go.</div>`;
+  el.innerHTML = r.length ? r.map(m => moveRow(m,false)).join('') : `<div class="empty"><h3>No movements yet</h3>Choose Stock in, tap Scan and point the camera at the GS1 label on a carton, box or pouch. Unknown GTINs are added as you go.</div>`;
 }
 
 function renderStock(){
   const all = computeStock();
   const live = all.filter(l => l.qty !== 0);
-  const units = live.reduce((s,l)=>s+l.qty,0);
+  const singles = live.reduce((s,l)=>s+l.qty*ppack(l.gtin),0);
   const expired = live.filter(l => l.qty>0 && daysLeft(l.expiry)!==null && daysLeft(l.expiry)<0);
   const soon = live.filter(l => l.qty>0 && daysLeft(l.expiry)!==null && daysLeft(l.expiry)>=0 && daysLeft(l.expiry)<=90);
-  $('c-stock').textContent = units ? units : '';
-  $('stock-sum').innerHTML = `<div><b>${units}</b><span>units on hand</span></div>
+  $('c-stock').textContent = singles ? singles : '';
+  $('stock-sum').innerHTML = `<div><b>${singles}</b><span>singles on hand</span></div>
     <div class="${soon.length?'is-warn':''}"><b>${soon.length}</b><span>lots ≤ 90 days</span></div>
     <div class="${expired.length?'is-bad':''}"><b>${expired.length}</b><span>lots expired</span></div>`;
   let lots = state.showEmpty ? all : live;
   if (state.filter==='soon') lots = soon; else if (state.filter==='expired') lots = expired;
-  const by = {};
-  for (const l of lots) (by[l.gtin] ||= []).push(l);
-  const gtins = Object.keys(by).sort((a,b)=>pname(a).localeCompare(pname(b)));
-  $('stock-list').innerHTML = gtins.length ? gtins.map(g => {
-    const ls = by[g].sort((a,b)=>(a.expiry||'9999').localeCompare(b.expiry||'9999'));
-    const tot = ls.reduce((s,l)=>s+l.qty,0);
-    return `<article class="prod"><div class="prod-head"><div style="min-width:0"><h3>${esc(pname(g))}</h3>
-      <div class="muted mono" style="font-size:.8rem">${psku(g)?esc(psku(g))+' · ':''}${g}</div></div><div class="tot">${tot}</div></div>
-      <div style="overflow-x:auto"><table class="lots"><thead><tr><th>Lot</th><th>Expiry</th><th>Qty</th></tr></thead><tbody>
-      ${ls.map(l => `<tr class="${daysLeft(l.expiry)!==null&&daysLeft(l.expiry)<0&&l.qty>0?'flag-bad':''}"><td class="mono">${esc(l.lot||'—')}</td><td><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span>${fmtDate(l.expiry)}</span>${expPill(l.expiry)}</div></td><td class="qty" style="${l.qty<0?'color:var(--bad)':''}">${l.qty}</td></tr>`).join('')}
-      </tbody></table></div></article>`;
+  const groups = {};
+  for (const l of lots) { const k = psku(l.gtin) || l.gtin; ((groups[k] ||= {})[l.gtin] ||= []).push(l); }
+  const keys = Object.keys(groups).sort((a,b)=>a.localeCompare(b));
+  $('stock-list').innerHTML = keys.length ? keys.map(k => {
+    const gt = Object.keys(groups[k]).sort((a,b)=>ppack(b)-ppack(a));
+    const tot = gt.reduce((s,g)=>s+groups[k][g].reduce((t,l)=>t+l.qty,0)*ppack(g),0);
+    const title = psku(gt[0]) ? psku(gt[0]) : pname(gt[0]);
+    return `<article class="prod"><div class="prod-head"><div style="min-width:0"><h3>${esc(title)}</h3>
+      <div class="muted" style="font-size:.82rem">${gt.length} pack level${gt.length===1?'':'s'}</div></div>
+      <div style="text-align:right"><div class="tot">${tot}</div><div class="muted" style="font-size:.75rem">singles</div></div></div>
+      ${gt.map(g => { const ls = groups[k][g].sort((a,b)=>(a.expiry||'9999').localeCompare(b.expiry||'9999'));
+        const packs = ls.reduce((s,l)=>s+l.qty,0); const canBreak = ppack(g) > 1 && smallerLevels(g).length;
+        return `<div style="padding:10px 16px 0;display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+          <div style="min-width:0"><div style="font-weight:600">${esc(pname(g))}</div><div class="muted mono" style="font-size:.76rem">${packLabel(g)} · ${g}</div></div>
+          <div class="qty">${packs}${ppack(g)>1?` <span class="muted" style="font-weight:400">= ${packs*ppack(g)}</span>`:''}</div></div>
+        <div style="overflow-x:auto"><table class="lots"><thead><tr><th>Lot</th><th>Expiry</th><th>Qty</th></tr></thead><tbody>
+        ${ls.map(l => `<tr class="${daysLeft(l.expiry)!==null&&daysLeft(l.expiry)<0&&l.qty>0?'flag-bad':''}"><td class="mono">${esc(l.lot||'—')}${canBreak&&l.qty>0?`<div><button class="btn ghost" style="padding:2px 0;font-size:.82rem;color:var(--accent)" data-break="${esc(g)}" data-lot="${esc(l.lot)}" data-exp="${esc(l.expiry)}">Break down</button></div>`:''}</td><td><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span>${fmtDate(l.expiry)}</span>${expPill(l.expiry)}</div></td><td class="qty" style="${l.qty<0?'color:var(--bad)':''}">${l.qty}</td></tr>`).join('')}
+        </tbody></table></div>`; }).join('')}
+      </article>`;
   }).join('') : `<div class="panel empty">${state.moves.length ? (state.filter==='all' ? '<h3>Nothing on hand</h3>Every recorded lot has been dispatched.' : '<h3>No lots match</h3>Nothing in this category right now.') : '<h3>No stock recorded</h3>Receive stock from the Scan tab and it will appear here by product and lot, earliest expiry first.'}</div>`;
+}
+function smallerLevels(g){
+  const sku = psku(g); if (!sku) return [];
+  return Object.values(state.products).filter(p => p.sku === sku && p.gtin !== g && ppack(p.gtin) < ppack(g) && ppack(g) % ppack(p.gtin) === 0).sort((a,b)=>ppack(b.gtin)-ppack(a.gtin));
+}
+$('stock-list').addEventListener('click', e => { const b = e.target.closest('[data-break]'); if (b) openBreakSheet(b.dataset.break, b.dataset.lot, b.dataset.exp); });
+function openBreakSheet(g, lot, exp){
+  const targets = smallerLevels(g); const have = onHand(g, lot, exp);
+  $('sheet-root').innerHTML = `
+  <div class="sheet-bg" id="sbg"><form class="sheet" id="b-form" role="dialog" aria-modal="true" aria-labelledby="bs-t">
+    <div style="display:flex;justify-content:space-between;align-items:center"><h2 id="bs-t">Break down</h2><button type="button" class="btn ghost" id="bs-x">Cancel</button></div>
+    <div><div style="font-weight:600">${esc(pname(g))}</div><div class="muted mono" style="font-size:.82rem">Lot ${esc(lot||'—')} · exp ${fmtDate(exp)} · ${have} on hand</div></div>
+    <div class="grid2">
+      <div class="field"><span class="label">Packs to open</span><div class="stepper"><button type="button" id="b-dn" aria-label="Decrease">−</button><input id="b-qty" type="number" inputmode="numeric" min="1" max="${have}" step="1" value="1"><button type="button" id="b-up" aria-label="Increase">+</button></div></div>
+      <label class="field"><span class="label">Into</span><select id="b-to" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 12px">${targets.map(t => `<option value="${esc(t.gtin)}">${esc(t.name)} (${packLabel(t.gtin)})</option>`).join('')}</select></label>
+    </div>
+    <div class="msg info" id="b-sum"></div>
+    <p class="muted" style="margin:0;font-size:.82rem">Records one stock out of the opened packs and one stock in of the contents, carrying the same lot and expiry.</p>
+    <div class="actions"><button type="submit" class="btn primary">Record break-down</button></div>
+  </form></div>`;
+  const close = () => { $('sheet-root').innerHTML=''; };
+  $('bs-x').onclick = close; $('sbg').addEventListener('click', e => { if (e.target.id==='sbg') close(); });
+  const q = $('b-qty');
+  const sum = () => { const n = Math.max(1, parseInt(q.value)||1), t = $('b-to').value; const yieldN = n*ppack(g)/ppack(t);
+    $('b-sum').textContent = `${n} × ${packLabel(g)} → ${yieldN} × ${packLabel(t)}`; return yieldN; };
+  $('b-dn').onclick = () => { q.value = Math.max(1,(parseInt(q.value)||1)-1); sum(); };
+  $('b-up').onclick = () => { q.value = Math.min(have,(parseInt(q.value)||0)+1); sum(); };
+  q.addEventListener('input', sum); $('b-to').addEventListener('change', sum); sum();
+  $('b-form').addEventListener('submit', async e => {
+    e.preventDefault(); const n = Math.max(1, parseInt(q.value)||1), t = $('b-to').value, yieldN = sum();
+    if (n > have) { $('b-sum').className='msg bad'; $('b-sum').textContent = `Only ${have} on hand in this lot.`; return; }
+    const at = new Date().toISOString();
+    try {
+      await store.addMove({ dir:'out', gtin:g, lot, expiry:exp, qty:n, note:`Broken down into ${yieldN} × ${pname(t)}`, at, raw:'' });
+      await store.addMove({ dir:'in', gtin:t, lot, expiry:exp, qty:yieldN, note:`From ${n} × ${pname(g)}`, at: new Date(Date.parse(at)+1).toISOString(), raw:'' });
+      close(); toast(`Opened ${n}, added ${yieldN} × ${pname(t)}`);
+    } catch(err) { $('b-sum').className='msg bad'; $('b-sum').textContent = 'Not saved. Try again.'; }
+  });
 }
 
 function renderLog(){
@@ -618,7 +669,7 @@ function renderProducts(){
   const ps = Object.values(state.products).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   $('c-prod').textContent = ps.length || '';
   $('prod-list').innerHTML = ps.length ? ps.map(p => `<div class="row" style="grid-template-columns:1fr auto">
-    <div class="main"><div class="title">${esc(p.name)}</div><div class="sub mono">${p.sku?esc(p.sku)+' · ':''}${esc(p.gtin)}</div></div>
+    <div class="main"><div class="title">${esc(p.name)}</div><div class="sub mono">${p.sku?esc(p.sku)+' · ':''}${ppack(p.gtin)===1?'single':'×'+ppack(p.gtin)} · ${esc(p.gtin)}</div></div>
     <button class="btn" data-edit="${esc(p.gtin)}">Edit</button></div>`).join('')
     : `<div class="empty"><h3>No GTINs yet</h3>Add your AFR GTINs here, or just scan a carton: an unknown GTIN prompts you to name it.</div>`;
 }
@@ -778,11 +829,11 @@ async function saveCsv(name, rows){
   const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000); toast('Saved ' + name + ' to Downloads'); return true;
 }
-const LOG_HEAD = ['ID','Date/time','Direction','GTIN','SKU','Description','Lot','Expiry','Qty','Reference','Raw scan'];
-$('x-stock').onclick = () => saveCsv(`stock-on-hand-${todayIso()}.csv`, [['GTIN','SKU','Description','Lot','Expiry','Qty on hand'], ...computeStock().filter(l => l.qty !== 0).sort((a,b) => (a.gtin + a.expiry).localeCompare(b.gtin + b.expiry)).map(l => [l.gtin, psku(l.gtin), pname(l.gtin), l.lot, l.expiry, l.qty])]);
+const LOG_HEAD = ['ID','Date/time','Direction','GTIN','SKU','Description','Lot','Expiry','Qty','Reference','Raw scan','Units per pack'];
+$('x-stock').onclick = () => saveCsv(`stock-on-hand-${todayIso()}.csv`, [['SKU','GTIN','Description','Units per pack','Lot','Expiry','Packs on hand','Singles on hand'], ...computeStock().filter(l => l.qty !== 0).sort((a,b) => (psku(a.gtin) + a.gtin + a.expiry).localeCompare(psku(b.gtin) + b.gtin + b.expiry)).map(l => [psku(l.gtin), l.gtin, pname(l.gtin), ppack(l.gtin), l.lot, l.expiry, l.qty, l.qty * ppack(l.gtin)])]);
 $('x-log').onclick = async () => {
-  const prodOnly = Object.values(state.products).filter(p => !state.moves.some(m => m.gtin === p.gtin)).map(p => ['', '', 'PRODUCT', p.gtin, p.sku, p.name, '', '', '', '', '']);
-  const ok = await saveCsv(`avangard-ledger-backup-${todayIso()}.csv`, [LOG_HEAD, ...state.moves.slice().reverse().map(m => [m.id, m.at, m.dir.toUpperCase(), m.gtin, psku(m.gtin), pname(m.gtin), m.lot, m.expiry, m.qty, m.note, m.raw]), ...prodOnly]);
+  const prodOnly = Object.values(state.products).filter(p => !state.moves.some(m => m.gtin === p.gtin)).map(p => ['', '', 'PRODUCT', p.gtin, p.sku, p.name, '', '', '', '', '', ppack(p.gtin)]);
+  const ok = await saveCsv(`avangard-ledger-backup-${todayIso()}.csv`, [LOG_HEAD, ...state.moves.slice().reverse().map(m => [m.id, m.at, m.dir.toUpperCase(), m.gtin, psku(m.gtin), pname(m.gtin), m.lot, m.expiry, m.qty, m.note, m.raw, ppack(m.gtin)]), ...prodOnly]);
   if (ok) { try { localStorage.setItem('ledger-backup', new Date().toISOString()); } catch(e){} checkBackup(); }
 };
 function parseCsv(text){
@@ -804,7 +855,7 @@ $('restore').addEventListener('change', async e => {
     const have = new Set(state.moves.map(m => m.id)); const prods = {}; const moves = [];
     for (const r of rows) {
       const gtin = r[ix('GTIN')]; if (!gtin) continue;
-      if (!state.products[gtin] && r[ix('Description')] && r[ix('Description')] !== 'Unlisted GTIN') prods[gtin] = { gtin, sku: r[ix('SKU')] || '', name: r[ix('Description')], createdAt: new Date().toISOString() };
+      if (!state.products[gtin] && r[ix('Description')] && r[ix('Description')] !== 'Unlisted GTIN') prods[gtin] = { gtin, sku: r[ix('SKU')] || '', name: r[ix('Description')], perPack: ix('Units per pack') >= 0 ? (parseInt(r[ix('Units per pack')]) || 1) : 1, createdAt: new Date().toISOString() };
       const dir = (r[ix('Direction')] || '').toLowerCase(); if (dir !== 'in' && dir !== 'out') continue;
       const id = r[ix('ID')] || ('r-' + gtin + '-' + r[ix('Date/time')]); if (have.has(id)) continue; have.add(id);
       moves.push({ id, at: r[ix('Date/time')], dir, gtin, lot: r[ix('Lot')] || '', expiry: r[ix('Expiry')] || '', qty: Number(r[ix('Qty')]) || 0, note: r[ix('Reference')] || '', raw: r[ix('Raw scan')] || '' });
